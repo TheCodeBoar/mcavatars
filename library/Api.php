@@ -106,23 +106,32 @@ class Api
 		}
 
 		$cacheFile = './internal_data/skins/'.strtolower($name).'.json';
-		if (!file_exists($cacheFile))
+		$lockfile =  './internal_data/skins/'.strtolower($name).'.lock';
+		if (!$this->is_file_wait($cacheFile,$lockfile))
 		{
 			$skinBase64 = $this->rebuildSkinCache($name, $username, $uuid);
 		}
 		else
 		{
-			$cache = file_get_contents($cacheFile);
+			$cache = $this->ReadSkinCache($cacheFile);
 			$data = json_decode($cache);
 
-			// Recache every day
-			if ($data->last_cache < time() - 86400)
+			// Recache every hour - people do change their skins more ofton than once a day
+			if ($data->last_cache < time() - 3600)
 			{
-				$skinBase64 = $this->rebuildSkinCache($name, $username, $data->uuid);
+				if ($this->is_file_wait($cacheFile,$lockfile))//this should almost always be true if it isnt then something is wrong
+				{
+					$skinBase64 = $this->rebuildSkinCache($name, $username, $data->uuid);
+				}
+				else
+				{
+					error_log('DEBUG: The file was there but now it is not!! getSkin causing issues', 0);
+					$skinBase64 = $this->rebuildSkinCache($name, $username, $data->uuid);
+				}
 			}
 			else
 			{
-				$skinBase64 = $data->skin;
+				$skinBase64 = $data->skin; 
 			}
 		}
 
@@ -132,6 +141,10 @@ class Api
 	public function rebuildSkinCache($name, $username='', $uuid='')
 	{
 		$cacheFile = './internal_data/skins/'.strtolower($name).'.json';
+		$lockfile =  './internal_data/skins/'.strtolower($name).'.lock';
+		
+		$this->WriteSkinCache($lockfile, "LOCKED");//setting lock file 
+		
 		if (!empty($username))
 		{
 			$uuid = $this->getUuidFromName($username);
@@ -152,11 +165,6 @@ class Api
 			'last_cache'        => time(),
 			'skin'              => $skin,
 		);
-		if (@file_exists($cacheFile))
-		{
-			$cache = @file_get_contents($cacheFile);
-			$data = json_decode($cache, true);
-		}
 		if ($username && $uuid)
 		{
 			$fileId = $uuid;
@@ -165,14 +173,90 @@ class Api
 			{
 				$fileOutput['skin'] = $skin;
 			}
+			else
+			{
+				$fileOutput['skin'] = $this->_steveBase64;
+			}
 			$fileOutput['last_cache'] = time();
 		}
 		$jsonContents = json_encode($fileOutput);
 
-		$fh = fopen($cacheFile, 'w+');
-		fwrite($fh, $jsonContents);
-		fclose($fh);
-
+		$this->WriteSkinCache($cacheFile, $jsonContents);//write contents to cache file
+		
+		unlink($lockfile); //remove lock file
+		
 		return $skin;
+	}
+	function WriteSkinCache($location,$info)
+	{
+		while(true)
+		{
+			$fp = fopen($location, "w");
+			if (flock($fp, LOCK_EX)) 
+			{
+				fwrite($fp, $info);
+				fflush($fp);            
+				flock($fp, LOCK_UN);
+				fclose($fp);
+				break;
+			}
+			else
+			{
+				fclose($fp);
+			}
+		}
+		
+	}
+	function ReadSkinCache($location)
+	{
+		while(true)
+		{
+			$fp = fopen($location, "r");
+			if (flock($fp, LOCK_EX)) 
+			{ 
+				$contents = fread($fp, filesize($location));         
+				flock($fp, LOCK_UN);
+				fclose($fp);
+				return $contents;
+				break;
+			}
+			else
+			{
+				fclose($fp);
+			}
+		}	
+	}
+	function is_file_wait($file,$lock) //basicly this function waits for the .lock file to be removed. will add indefinate loop protection soon
+	{
+		while(true)
+		{
+			if(is_file($file)) //is the json file there?
+			{
+				if(!is_file($lock)) //is the lock file there?
+				{
+					return true; //well the json file is there and the lock file is not there, so true 
+					break;
+				}
+				else
+				{
+					usleep(200000); //well the json file is there and so is the lock file. lets wait for a few nano seconds and try again
+					continue;//this may be a indefinite loop issue
+				}
+			}
+			else
+			{
+				if(!is_file($lock))
+				{
+					return false; //well the neither the json file or lock file are found
+					break; 
+				}
+				else
+				{
+					//json file not found but the lock file is, lets wait a bit
+					usleep(200000);
+					continue;
+				}
+			}
+		}
 	}
 }
